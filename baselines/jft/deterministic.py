@@ -698,24 +698,18 @@ def main(argv):
               for metric in ood_metrics:
                 metric_name = metric.get_metric_name()
                 if metric_name == 'msp':
-                  ood_scores = np.max(probs, axis=-1)
-                  ood_labels = np.ones_like(
-                      ood_scores) if val_name == 'ind' else np.zeros_like(
-                          ood_scores)
+                  ood_scores = 1 - np.max(probs, axis=-1)
                 elif metric_name == 'maha':
                   ood_scores = np.min(dists, axis=-1)
-                  ood_labels = np.zeros_like(
-                      ood_scores) if val_name == 'ind' else np.ones_like(
-                          ood_scores)
                 elif metric_name == 'rmaha':
                   ood_scores = np.min(dists, axis=-1) - dists0.reshape(-1)
-                  ood_labels = np.zeros_like(
-                      ood_scores) if val_name == 'ind' else np.ones_like(
-                          ood_scores)
                 else:
                   raise NotImplementedError(
                       'Only msp, maha, and rmaha are supported for OOD evaluation! Got metric_name=%s!'
                       % metric_name)
+                ood_labels = np.zeros_like(
+                    ood_scores) if val_name == 'ind' else np.ones_like(
+                        ood_scores)
                 metric.update(ood_scores, ood_labels)
 
           if val_name == 'train_maha':
