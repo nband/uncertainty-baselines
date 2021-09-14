@@ -20,6 +20,7 @@ import tempfile
 
 from absl import flags
 from absl import logging
+from absl.testing import flagsaver
 from absl.testing import parameterized
 import jax
 import ml_collections
@@ -50,6 +51,7 @@ def get_config(classifier, representation_size):
   config.batch_size = 3
   config.prefetch_to_device = 1
   config.shuffle_buffer_size = 20
+  config.val_cache = False
 
   config.total_steps = 3
   config.log_training_steps = config.total_steps
@@ -114,12 +116,21 @@ def get_config(classifier, representation_size):
 
 class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
 
+  def setUp(self):
+    super().setUp()
+    # Go two directories up to the root of the UB directory.
+    ub_root_dir = pathlib.Path(__file__).parents[2]
+    data_dir = str(ub_root_dir) + '/.tfds/metadata'
+    logging.info('data_dir contents: %s', os.listdir(data_dir))
+    self.data_dir = data_dir
+
   @parameterized.parameters(
-      ('token', 2, 13601.465, 11799.640190972223, 0.14999999105930328),
-      ('token', None, 10874.713, 9360.7265625, 0.1899999976158142),
-      ('gap', 2, 13881.022, 13214.797743055555, 0.2199999913573265),
-      ('gap', None, 13278.581, 12868.815972222223, 0.28999999165534973),
+      ('token', 2, 12854.799, 12937.0625, 0.13999999314546585),
+      ('token', None, 10806.852, 18732.41579861111, 0.1899999976158142),
+      ('gap', 2, 13537.143, 13002.321180555555, 0.19999999552965164),
+      ('gap', None, 13047.623, 12661.753472222223, 0.26999999582767487),
   )
+  @flagsaver.flagsaver
   def test_deterministic_script(self, classifier, representation_size,
                                 correct_train_loss, correct_val_loss,
                                 correct_fewshot_acc_sum):
@@ -128,15 +139,10 @@ class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
     FLAGS.config = get_config(
         classifier=classifier, representation_size=representation_size)
     FLAGS.output_dir = tempfile.mkdtemp(dir=self.get_temp_dir())
-
-    # Go two directories up to the root of the UB directory.
-    ub_root_dir = pathlib.Path(__file__).parents[2]
-    data_dir = str(ub_root_dir) + '/.tfds/metadata'
-    logging.info('data_dir contents: %s', os.listdir(data_dir))
-    FLAGS.config.dataset_dir = data_dir
+    FLAGS.config.dataset_dir = self.data_dir
 
     # Check for any errors.
-    with tfds.testing.mock_data(num_examples=100, data_dir=data_dir):
+    with tfds.testing.mock_data(num_examples=100, data_dir=self.data_dir):
       train_loss, val_loss, fewshot_results = deterministic.main(None)
 
     # Check for reproducibility.
@@ -145,19 +151,22 @@ class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
                  train_loss, val_loss, fewshot_acc_sum)
     self.assertAllClose(train_loss, correct_train_loss)
     self.assertAllClose(val_loss, correct_val_loss)
-    self.assertAllClose(fewshot_acc_sum, correct_fewshot_acc_sum)
+    # The fewshot training pipeline is not completely deterministic. For now, we
+    # increase the tolerance to avoid the test being flaky.
+    self.assertAllClose(
+        fewshot_acc_sum, correct_fewshot_acc_sum, atol=0.02, rtol=0.15)
 
     # Check for the ability to restart from a previous checkpoint (after
     # failure, etc.).
     FLAGS.output_dir = tempfile.mkdtemp(dir=self.get_temp_dir())
     # NOTE: Use this flag to simulate failing at a certain step.
     FLAGS.config.testing_failure_step = FLAGS.config.total_steps - 1
-    with tfds.testing.mock_data(num_examples=100, data_dir=data_dir):
+    with tfds.testing.mock_data(num_examples=100, data_dir=self.data_dir):
       deterministic.main(None)
 
     # This should resume from the failed step.
     del FLAGS.config.testing_failure_step
-    with tfds.testing.mock_data(num_examples=100, data_dir=data_dir):
+    with tfds.testing.mock_data(num_examples=100, data_dir=self.data_dir):
       train_loss, val_loss, fewshot_results = deterministic.main(None)
 
     fewshot_acc_sum = sum(jax.tree_util.tree_flatten(fewshot_results)[0])
@@ -165,14 +174,18 @@ class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
                  train_loss, val_loss, fewshot_acc_sum)
     self.assertAllClose(train_loss, correct_train_loss)
     self.assertAllClose(val_loss, correct_val_loss)
-    self.assertAllClose(fewshot_acc_sum, correct_fewshot_acc_sum)
+    # The fewshot training pipeline is not completely deterministic. For now, we
+    # increase the tolerance to avoid the test being flaky.
+    self.assertAllClose(
+        fewshot_acc_sum, correct_fewshot_acc_sum, atol=0.02, rtol=0.15)
 
   @parameterized.parameters(
-      ('token', 2, 5.5827255, 4.953414811028375, 0.09999999776482582),
-      ('token', None, 5.517692, 5.991951836480035, 0.10999999940395355),
-      ('gap', 2, 6.465595, 6.081136491563585, 0.06999999657273293),
-      ('gap', None, 6.450119, 5.984557469685872, 0.0800000000745058),
+      ('token', 2, 5.6292143, 5.622877968682183, 0.07999999821186066),
+      ('token', None, 5.6714106, 5.177046987745497, 0.11999999731779099),
+      ('gap', 2, 6.5026107, 5.9192627800835504, 0.08999999798834324),
+      ('gap', None, 6.4839783, 6.014546076456706, 0.06999999657273293),
   )
+  @flagsaver.flagsaver
   def test_loading_pretrained_model(self, classifier, representation_size,
                                     correct_train_loss, correct_val_loss,
                                     correct_fewshot_acc_sum):
@@ -181,16 +194,11 @@ class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
     FLAGS.config = get_config(
         classifier=classifier, representation_size=representation_size)
     FLAGS.output_dir = tempfile.mkdtemp(dir=self.get_temp_dir())
-
-    # Go two directories up to the root of the UB directory.
-    ub_root_dir = pathlib.Path(__file__).parents[2]
-    data_dir = str(ub_root_dir) + '/.tfds/metadata'
-    logging.info('data_dir contents: %s', os.listdir(data_dir))
-    FLAGS.config.dataset_dir = data_dir
+    FLAGS.config.dataset_dir = self.data_dir
 
     # Run to save a checkpoint, then use that as a pretrained model.
     FLAGS.output_dir = tempfile.mkdtemp(dir=self.get_temp_dir())
-    with tfds.testing.mock_data(num_examples=100, data_dir=data_dir):
+    with tfds.testing.mock_data(num_examples=100, data_dir=self.data_dir):
       deterministic.main(None)
 
     previous_output_dir = FLAGS.output_dir
@@ -205,21 +213,21 @@ class DeterministicTest(parameterized.TestCase, tf.test.TestCase):
     pp_common = '|value_range(-1, 1)'
     pp_common += f'|onehot({FLAGS.config.num_classes}, key="label", key_result="labels")'  # pylint: disable=line-too-long
     pp_common += '|keep("image", "labels")'
-    FLAGS.config.pp_train = (
-        'decode|resize_small(512)|central_crop(384)|flip_lr' + pp_common)
+    FLAGS.config.pp_train = ('decode|resize_small(512)|central_crop(384)' +
+                             pp_common)
     FLAGS.config.pp_eval = 'decode|resize(384)' + pp_common
     FLAGS.config.fewshot.pp_train = 'decode|resize_small(512)|central_crop(384)|value_range(-1,1)'
     FLAGS.config.fewshot.pp_eval = 'decode|resize(384)|value_range(-1,1)'
-    with tfds.testing.mock_data(num_examples=100, data_dir=data_dir):
+    with tfds.testing.mock_data(num_examples=100, data_dir=self.data_dir):
       train_loss, val_loss, fewshot_results = deterministic.main(None)
 
     fewshot_acc_sum = sum(jax.tree_util.tree_flatten(fewshot_results)[0])
     logging.info('(train_loss, val_loss, fewshot_acc_sum) = %s, %s, %s',
                  train_loss, val_loss, fewshot_acc_sum)
-    # Training pipeline is not completely deterministic. For now, we increase
-    # the tolerance to avoid the test being flaky.
-    self.assertAllClose(train_loss, correct_train_loss, atol=0.02, rtol=1e-5)
-    self.assertAllClose(val_loss, correct_val_loss, atol=0.02, rtol=1e-5)
+    self.assertAllClose(train_loss, correct_train_loss)
+    self.assertAllClose(val_loss, correct_val_loss)
+    # The fewshot training pipeline is not completely deterministic. For now, we
+    # increase the tolerance to avoid the test being flaky.
     self.assertAllClose(fewshot_acc_sum, correct_fewshot_acc_sum, atol=0.02,
                         rtol=0.15)
 
