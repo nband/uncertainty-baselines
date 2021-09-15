@@ -288,6 +288,20 @@ class BaseDataset(robustness_metrics_base.TFDSDataset):
           add_fingerprint_key_fn,
           num_parallel_calls=self._num_parallel_parser_calls)
 
+    # If we are:
+    # Truncating the validation/test dataset (self._drop_remainder)
+    # we may as well repeat to speed things up
+    # TODO(nband): benchmark
+    if (self.name in {
+      'diabetic_retinopathy_detection',
+      'diabetic_retinopathy_severity_shift_mild',
+      'diabetic_retinopathy_severity_shift_moderate',
+      'aptos/btgraham-300'}
+       and not self._is_training and self._drop_remainder):
+      dataset = dataset.repeat()
+      logging.info(f'Repeating dataset {self.name} '
+                   f'(training mode: {self._is_training}).')
+
     # Shuffle and repeat only for the training split.
     if self._is_training:
       dataset = dataset.shuffle(
@@ -330,8 +344,17 @@ class BaseDataset(robustness_metrics_base.TFDSDataset):
       dataset = dataset.map(
           process_batch_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
-    if not self._is_training and self.name != 'diabetic_retinopathy_detection':
+    if (not self._is_training and
+        self.name not in {
+          'diabetic_retinopathy_detection',
+          'diabetic_retinopathy_severity_shift_mild',
+          'diabetic_retinopathy_severity_shift_moderate',
+          'aptos/btgraham-300'}):
       dataset = dataset.cache()
+    else:
+      if not self._cache:
+        logging.info(f'Not caching dataset {self.name} '
+                     f'(training mode: {self._is_training}).')
 
     dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
 
@@ -344,7 +367,13 @@ class BaseDataset(robustness_metrics_base.TFDSDataset):
     # options.experimental_optimization.parallel_batch = True
     options.experimental_optimization.map_fusion = True
     options.experimental_optimization.map_parallelization = True
-    options.experimental_threading.private_threadpool_size = 48
+    # options.experimental_threading.private_threadpool_size = 48
+    logging.info('Current threadpool size setting: ')
+    logging.info(options.experimental_threading.private_threadpool_size)
+
+    logging.info('Current intra op parallelism setting: ')
+    logging.info(options.experimental_threading.max_intra_op_parallelism)
+    # options.experimental_threading.max_intra_op_parallelism = 1
     options.experimental_threading.max_intra_op_parallelism = 1
     dataset = dataset.with_options(options)
     return dataset
